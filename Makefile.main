@@ -1,36 +1,182 @@
 SHELL := /bin/bash
 
+# Package configuration
+PROJECT ?=
+COMMANDS ?=
+
+# Checking mandatory variables
+ifndef PROJECT
+$(error ERROR! The PROJECT variable cannot be empty)
+endif
+
+# Environment
+BUILD_PATH := build
+BIN_PATH := $(BUILD_PATH)/bin
+BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
+CI_PATH ?= .ci
+
+# GCP credentials
 GOOGLE_CREDENTIALS ?=
 GOOGLE_PROJECT ?=
 
+# LD_FLAGS to be use at `go build` calls.
+LD_FLAGS ?= -X main.version=$(VERSION) -X main.build=$(BUILD) -X main.commit=$(COMMIT)
+# Tags to be used as `-tags` argument at `go build` and `go install`
+GO_TAGS ?=
+# Arguments to be used in `go` commands.
+GO_GET_ARGS ?= -v -t
+GO_TEST_ARGS ?= -v
+GO_BUILD_ARGS ?= -ldflags "$(LD_FLAGS)"
+GOPROXY ?= https://proxy.golang.org
+# Environment variable to use at `go build` calls.
+GO_BUILD_ENV ?=
+
+# Go parameters
+ifneq ($(GO_TAGS), )
+	GO_GET_ARGS += -tags "$(GO_TAGS)"
+	GO_TEST_ARGS += -tags "$(GO_TAGS)"
+	GO_BUILD_ARGS += -tags "$(GO_TAGS)"
+endif
+
+GOCMD = go
+GOGET = GOPROXY=$(GOPROXY) $(GOCMD) get $(GO_GET_ARGS)
+GOBUILD = GOPROXY=$(GOPROXY) $(GOCMD) build $(GO_BUILD_ARGS)
+GOTEST = GOPROXY=$(GOPROXY) $(GOCMD) test $(GO_TEST_ARGS)
+GOTEST_RACE = $(GOTEST) -race
+GOCLEAN = $(GOCMD) clean
+
+# Packages content
+PKG_OS ?= darwin linux
+PKG_ARCH = amd64
+
+# Coverage
+COVERAGE_REPORT = coverage.txt
+COVERAGE_PROFILE = profile.out
+COVERAGE_MODE = atomic
+
+PACKAGES = $(shell go list ./... | grep -v '/vendor/')
+
+# Docker OS/Arch used to match the right binaries.
+# If docker is not installed, fallback to GOOS/GOARCH.
+ifneq ($(shell which docker),)
+DOCKER_OS ?= $(shell docker version -f "{{.Server.Os}}")
+DOCKER_ARCH ?= $(shell docker version -f "{{.Server.Arch}}")
+else
+DOCKER_OS ?= $(shell go env GOOS)
+DOCKER_ARCH ?= $(shell go env GOARCH)
+endif
+
+# gcloud
 CLOUDSDK_INSTALL_DIR ?= ${HOME}
 PATH := ${CLOUDSDK_INSTALL_DIR}/google-cloud-sdk/bin:$(PATH)
 
-.PHONY: gcloud-ensure
 gcloud-ensure:
 	gcloud version || $(MAKE) gcloud-install
 
-.PHONY: gcloud-install
 gcloud-install:
 	rm -rf ${CLOUDSDK_INSTALL_DIR}/google-cloud-sdk
 	curl https://sdk.cloud.google.com | CLOUDSDK_CORE_DISABLE_PROMPTS=1 bash
 	gcloud version
 
-.PHONY:  gcloud-login
 gcloud-login:
 	echo "$(GOOGLE_CREDENTIALS)" | base64 --decode > google-credentials.json
 	gcloud -q auth activate-service-account --key-file google-credentials.json
 	gcloud config set project "$(GOOGLE_PROJECT)"
 
-.PHONY: docker-build
 docker-build:
 	docker build -t "${IMAGE}" .
 
-.PHONY: docker-push
 docker-push: gcloud-login
 	gcloud docker -- push "${IMAGE}"
 	gcloud pubsub topics publish version-controller \
     --message "{ \"namespace\": \"${K8S_NAMESPACE}\", \"deployment\": \"${K8S_DEPLOYMENT}\", \"image\": \"${IMAGE}\" }"
 
-.PHONY: deploy
 deploy: docker-build docker-push
+
+packages: build
+	@cd $(BUILD_PATH); \
+	for os in $(PKG_OS); do \
+		for arch in $(PKG_ARCH); do \
+			TAR_VERSION=`echo $(VERSION) | tr "/" "-"`; \
+			tar -cvzf $(PROJECT)_$${TAR_VERSION}_$${os}_$${arch}.tar.gz $(PROJECT)_$${os}_$${arch}/; \
+		done; \
+	done
+
+build: $(COMMANDS)
+$(COMMANDS):
+	@if [ "$@" == "." ]; then \
+		BIN=`basename $(CURDIR)` ; \
+	else \
+		BIN=`basename $@` ; \
+	fi && \
+	for os in $(PKG_OS); do \
+		NBIN="$${BIN}" ; \
+		if [ "$${os}" == windows ]; then \
+			NBIN="$${NBIN}.exe"; \
+		fi && \
+		for arch in $(PKG_ARCH); do \
+			mkdir -p $(BUILD_PATH)/$(PROJECT)_$${os}_$${arch} && \
+			$(GO_BUILD_ENV) GOOS=$${os} GOARCH=$${arch} \
+				$(GOBUILD) -o "$(BUILD_PATH)/$(PROJECT)_$${os}_$${arch}/$${NBIN}" ./$@ && \
+			if [ "$(DOCKER_OS)" == "$${os}" ] && [ "$(DOCKER_ARCH)" == "$${arch}" ]; then \
+				echo "Linking matching OS/Arch binaries to "build/bin" folder" && \
+				mkdir -p $(BIN_PATH) && \
+				cp -rf $(BUILD_PATH)/$(PROJECT)_$${os}_$${arch}/$${NBIN} $(BIN_PATH); \
+			fi; \
+		done; \
+	done
+
+test:
+	$(GOTEST) $(PACKAGES)
+
+test-race:
+	if [ -z "$(TEST_RACE)" ]; then \
+		echo -e "\033[0;31mWARNING! Testing with race detection is disabled, please consider toggling it on setting TEST_RACE ?= true"; \
+	else \
+		$(GOTEST_RACE) $(PACKAGES); \
+	fi; \
+
+test-coverage:
+	echo "" > $(COVERAGE_REPORT); \
+	for dir in $(PACKAGES); do \
+		$(GOTEST) $$dir -coverprofile=$(COVERAGE_PROFILE) -covermode=$(COVERAGE_MODE); \
+		if [ $$? != 0 ]; then \
+			exit 2; \
+		fi; \
+		if [ -f $(COVERAGE_PROFILE) ]; then \
+			cat $(COVERAGE_PROFILE) >> $(COVERAGE_REPORT); \
+			rm $(COVERAGE_PROFILE); \
+		fi; \
+	done || exit 1; \
+
+codecov:
+	@if [ ! -f $(COVERAGE_REPORT) ]; then \
+		echo "Unable to find '$(COVERAGE_REPORT)', execute 'make test-coverage' first."; \
+		exit 1; \
+	fi; \
+	wget -q -O - https://codecov.io/bash | bash
+
+clean:
+	rm -rf $(BUILD_PATH) $(BIN_PATH)
+	$(GOCLEAN) .
+
+ifeq ($($strip $(COMMANDS)),)
+ci-script: | test-coverage codecov test-race
+	@echo
+else
+ci-script: | test-coverage codecov test-race packages
+	@echo
+endif
+
+.PHONY: build $(COMMANDS) \
+        ci-script \
+        clean \
+        codecov \
+        deploy \
+        docker-build \
+		docker-push \
+		gcloud-ensure \
+        gcloud-install \
+        gcloud-login \
+		packages \
+		test test-race test-coverage

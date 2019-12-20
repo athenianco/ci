@@ -86,12 +86,14 @@ gcloud-login:
 docker-build:
 	docker build -t "${IMAGE}" .
 
-docker-push: gcloud-login
+docker-push:
 	gcloud docker -- push "${IMAGE}"
+
+pubsub-publish:
 	gcloud pubsub topics publish version-controller \
     --message "{ \"namespace\": \"${K8S_NAMESPACE}\", \"deployment\": \"${K8S_DEPLOYMENT}\", \"image\": \"${IMAGE}\" }"
 
-deploy: docker-build docker-push
+deploy: docker-build gcloud-login docker-push pubsub-publish
 
 packages: build
 	@cd $(BUILD_PATH); \
@@ -179,4 +181,5 @@ endif
         gcloud-install \
         gcloud-login \
 		packages \
+		pubsub-publish \
 		test test-race test-coverage

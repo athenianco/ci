@@ -89,9 +89,10 @@ docker-build:
 docker-push:
 	gcloud docker -- push "${IMAGE}"
 
+# TODO: do not depend on TRAVIS_BRANCH in the future
 pubsub-publish:
-	gcloud pubsub topics publish version-controller \
-    --message "{ \"namespace\": \"${K8S_NAMESPACE}\", \"deployment\": \"${K8S_DEPLOYMENT}\", \"image\": \"${IMAGE}\" }"
+	gcloud pubsub topics publish jenkins \
+	--message "{ \"token\": \"main\", \"data\": { \"branch\": \"${TRAVIS_BRANCH}\", \"service\": \"$(SERVICE_NAME)\", \"image\": \"${IMAGE}\" } }"
 
 deploy: docker-build gcloud-login docker-push pubsub-publish
 

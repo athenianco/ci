@@ -66,6 +66,8 @@ DOCKER_OS ?= $(shell go env GOOS)
 DOCKER_ARCH ?= $(shell go env GOARCH)
 endif
 
+DOCKER_EXTRA_BUILD_FLAGS ?=
+
 # gcloud
 CLOUDSDK_INSTALL_DIR ?= ${HOME}
 PATH := ${CLOUDSDK_INSTALL_DIR}/google-cloud-sdk/bin:$(PATH)
@@ -84,7 +86,7 @@ gcloud-login:
 	gcloud config set project "$(GOOGLE_PROJECT)"
 
 docker-build:
-	docker build -t "${IMAGE}" .
+	docker build -t "${IMAGE}" $(DOCKER_EXTRA_BUILD_FLAGS) .
 
 docker-push:
 	gcloud docker -- push "${IMAGE}"

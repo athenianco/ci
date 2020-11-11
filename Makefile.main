@@ -12,7 +12,8 @@ endif
 # Environment
 BUILD_PATH := build
 BIN_PATH := $(BUILD_PATH)/bin
-BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
+BRANCH ?= $(or $(TRAVIS_BRANCH),$(subst refs/heads/,,$(GITHUB_REF)))
+BRANCH := $(or $(BRANCH),$(shell git rev-parse --abbrev-ref HEAD))
 CI_PATH ?= .ci
 
 # GCP credentials
@@ -91,10 +92,9 @@ docker-build:
 docker-push:
 	gcloud docker -- push "${IMAGE}"
 
-# TODO: do not depend on TRAVIS_BRANCH in the future
 pubsub-publish:
 	gcloud pubsub topics publish jenkins \
-	--message "{ \"token\": \"main\", \"data\": { \"branch\": \"${TRAVIS_BRANCH}\", \"service\": \"$(SERVICE_NAME)\", \"image\": \"${IMAGE}\", \"config_b64\":\"\" } }"
+	--message "{ \"token\": \"main\", \"data\": { \"branch\": \"${BRANCH}\", \"service\": \"$(SERVICE_NAME)\", \"image\": \"${IMAGE}\", \"config_b64\":\"\" } }"
 
 deploy: docker-build gcloud-login docker-push pubsub-publish
 

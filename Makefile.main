@@ -90,7 +90,9 @@ docker-build:
 	docker build -t "${IMAGE}" $(DOCKER_EXTRA_BUILD_FLAGS) .
 
 docker-push:
-	gcloud docker -- push "${IMAGE}"
+	gcloud auth configure-docker -q
+	gcloud auth configure-docker -q us-east1-docker.pkg.dev
+	docker push "${IMAGE}"
 
 pubsub-publish:
 	gcloud pubsub topics publish jenkins \

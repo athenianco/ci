@@ -97,8 +97,6 @@ docker-push:
 pubsub-publish:
 	gcloud pubsub topics publish jenkins \
 	--message "{ \"token\": \"main\", \"data\": { \"branch\": \"${BRANCH}\", \"service\": \"$(SERVICE_NAME)\", \"image\": \"${IMAGE}\", \"config_b64\":\"\" } }"
-	gcloud pubsub topics publish jenkins \
-	--message "{ \"token\": \"pre-production\", \"data\": { \"branch\": \"${BRANCH}\", \"service\": \"$(SERVICE_NAME)\", \"image\": \"${IMAGE}\", \"config_b64\":\"\" } }"
 
 deploy: docker-build gcloud-login docker-push pubsub-publish
 
